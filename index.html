@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import * as React from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -6,7 +7,40 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { AlertCircle, Calendar, Calculator, DollarSign, PlusCircle, Trash2, FileDown } from "lucide-react";
 
-function addMonths(date, months) {
+// Types
+interface CalcDetails {
+  totalDays?: number;
+  elapsedDays?: number;
+  monthsCounted?: number;
+  start?: Date;
+  end?: Date;
+}
+
+interface CalcResult {
+  valid: boolean;
+  message: string;
+  pct: number; // 0..1
+  repay: number; // in EUR
+  details: CalcDetails;
+}
+
+interface SavedRow {
+  name: string;
+  insurer: string;
+  contractNo: string;
+  start: string; // yyyy-mm-dd
+  termination: string; // yyyy-mm-dd
+  months: number;
+  method: CountingMethod;
+  commissionPaid: number;
+  clawbackPct: number; // 0..1
+  repay: number;
+}
+
+type CountingMethod = "pro-rata-days" | "whole-months-round-up" | "whole-months-round-down";
+
+// Utils
+function addMonths(date: Date, months: number): Date {
   const d = new Date(date.getTime());
   const targetMonth = d.getMonth() + months;
   const yearsToAdd = Math.floor(targetMonth / 12);
@@ -16,36 +50,42 @@ function addMonths(date, months) {
   return d;
 }
 
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-function formatPct(x) { if (!isFinite(x)) return "–"; return (x * 100).toFixed(2) + "%"; }
-function formatMoney(x) { if (!isFinite(x)) return "–"; return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR" }).format(x); }
-
-function toISODate(d) {
-  if (!(d instanceof Date) || isNaN(d)) return "";
-  return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
 }
 
-export default function ClawbackCalculator() {
-  const [commissionPaid, setCommissionPaid] = useState(0);
-  const [responsibilityMonths, setResponsibilityMonths] = useState(12);
-  const [startDate, setStartDate] = useState("");
-  const [terminationDate, setTerminationDate] = useState("");
-  const [mode, setMode] = useState("pro-rata-days");
+function formatPct(x: number): string {
+  if (!Number.isFinite(x)) return "–";
+  return (x * 100).toFixed(2) + "%";
+}
 
-  // New free-text metadata fields
-  const [clientName, setClientName] = useState("");
-  const [insurer, setInsurer] = useState("");
-  const [contractNumber, setContractNumber] = useState("");
+function formatMoney(x: number): string {
+  if (!Number.isFinite(x)) return "–";
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR" }).format(x);
+}
+
+export default function ClawbackCalculator(): JSX.Element {
+  const [commissionPaid, setCommissionPaid] = useState<number>(0);
+  const [responsibilityMonths, setResponsibilityMonths] = useState<number>(12);
+  const [startDate, setStartDate] = useState<string>("");
+  const [terminationDate, setTerminationDate] = useState<string>("");
+  const [mode, setMode] = useState<CountingMethod>("pro-rata-days");
+
+  // Free-text metadata fields
+  const [clientName, setClientName] = useState<string>("");
+  const [insurer, setInsurer] = useState<string>("");
+  const [contractNumber, setContractNumber] = useState<string>("");
 
   // Table of saved clawbacks this session
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState<SavedRow[]>([]);
 
-  const result = useMemo(() => {
+  const result: CalcResult = useMemo(() => {
     if (!startDate || !terminationDate || !responsibilityMonths || responsibilityMonths <= 0) {
       return { valid: false, message: "Fill all required fields.", pct: 0, repay: 0, details: {} };
     }
     const start = new Date(startDate + "T00:00:00");
     const term = new Date(terminationDate + "T00:00:00");
+
     if (isNaN(start.getTime()) || isNaN(term.getTime())) {
       return { valid: false, message: "Invalid dates.", pct: 0, repay: 0, details: {} };
     }
@@ -55,24 +95,26 @@ export default function ClawbackCalculator() {
 
     const end = addMonths(start, Number(responsibilityMonths));
 
-    let earnedRatio = 0;
-    let detail = {};
+    let earnedRatio = 0; // portion of commission earned and kept
+    let detail: CalcDetails = {};
 
     if (mode === "pro-rata-days") {
-      const totalDays = clamp((end - start) / (1000 * 60 * 60 * 24), 1, Infinity);
-      const elapsedDays = clamp((term - start) / (1000 * 60 * 60 * 24), 0, totalDays);
+      const totalDays = clamp((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24), 1, Infinity);
+      const elapsedDays = clamp((term.getTime() - start.getTime()) / (1000 * 60 * 60 * 24), 0, totalDays);
       earnedRatio = clamp(elapsedDays / totalDays, 0, 1);
       detail = { totalDays: Math.round(totalDays), elapsedDays: Math.round(elapsedDays) };
     } else if (mode === "whole-months-round-up") {
+      // Count months between start and termination, partial counts as full
       let months = (term.getFullYear() - start.getFullYear()) * 12 + (term.getMonth() - start.getMonth());
-      const partial = term.getDate() >= start.getDate() ? 0 : 1;
-      months = months + (partial === 0 ? 1 : 0);
+      const partial = term.getDate() >= start.getDate() ? 0 : 1; // if day earlier than start day, it's partial
+      months = months + (partial === 0 ? 1 : 0); // include current month as full if not earlier day
       months = clamp(months, 0, Number(responsibilityMonths));
       earnedRatio = months / Number(responsibilityMonths);
       detail = { monthsCounted: months };
     } else if (mode === "whole-months-round-down") {
+      // Count full months only, ignore partial
       let months = (term.getFullYear() - start.getFullYear()) * 12 + (term.getMonth() - start.getMonth());
-      if (term.getDate() < start.getDate()) months -= 1;
+      if (term.getDate() < start.getDate()) months -= 1; // not a full month yet
       months = clamp(months, 0, Number(responsibilityMonths));
       earnedRatio = months / Number(responsibilityMonths);
       detail = { monthsCounted: months };
@@ -88,7 +130,7 @@ export default function ClawbackCalculator() {
 
   function addRow() {
     if (!result.valid) return;
-    const row = {
+    const row: SavedRow = {
       name: clientName || "",
       insurer: insurer || "",
       contractNo: contractNumber || "",
@@ -103,7 +145,7 @@ export default function ClawbackCalculator() {
     setRows(prev => [row, ...prev]);
   }
 
-  function removeRow(index) {
+  function removeRow(index: number) {
     setRows(prev => prev.filter((_, i) => i !== index));
   }
 
@@ -126,7 +168,7 @@ export default function ClawbackCalculator() {
       "Repayment (€)"
     ];
 
-    const mapMethod = m => (
+    const mapMethod = (m: CountingMethod) => (
       m === "pro-rata-days" ? "Pro‑rata days" : m === "whole-months-round-up" ? "Whole months (up)" : "Whole months (down)"
     );
 
@@ -136,21 +178,22 @@ export default function ClawbackCalculator() {
       r.contractNo,
       r.start,
       r.termination,
-      r.months,
+      String(r.months),
       mapMethod(r.method),
       r.commissionPaid.toFixed(2),
       (r.clawbackPct * 100).toFixed(2) + "%",
       r.repay.toFixed(2)
     ].map(v => `"${String(v).replaceAll('"','""')}"`).join(","));
 
-    const csv = [headers.join(","), ...rowsCsv].join("
-");
+    const csv = [headers.join(","), ...rowsCsv].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `clawbacks_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -168,22 +211,22 @@ export default function ClawbackCalculator() {
           <CardContent className="p-4 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="clientName">Name</Label>
-              <Input id="clientName" placeholder="e.g. Jane Doe" value={clientName} onChange={e => setClientName(e.target.value)} />
+              <Input id="clientName" placeholder="e.g. Jane Doe" value={clientName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setClientName(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="insurer">Insurance Company</Label>
-              <Input id="insurer" placeholder="e.g. Allianz" value={insurer} onChange={e => setInsurer(e.target.value)} />
+              <Input id="insurer" placeholder="e.g. Allianz" value={insurer} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInsurer(e.target.value)} />
             </div>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="contractNumber">Contract number</Label>
-              <Input id="contractNumber" placeholder="e.g. ABC-123456" value={contractNumber} onChange={e => setContractNumber(e.target.value)} />
+              <Input id="contractNumber" placeholder="e.g. ABC-123456" value={contractNumber} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractNumber(e.target.value)} />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="commissionPaid">Commission initially paid (€)</Label>
               <div className="flex items-center gap-2">
                 <DollarSign className="h-4 w-4 opacity-50" />
-                <Input id="commissionPaid" type="number" min="0" step="0.01" placeholder="e.g. 3500" value={commissionPaid} onChange={e => setCommissionPaid(Number(e.target.value))} />
+                <Input id="commissionPaid" type="number" min={0} step={0.01} placeholder="e.g. 3500" value={commissionPaid} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCommissionPaid(Number(e.target.value || 0))} />
               </div>
             </div>
 
@@ -191,7 +234,7 @@ export default function ClawbackCalculator() {
               <Label htmlFor="months">Responsibility period (months)</Label>
               <div className="flex items-center gap-2">
                 <Calculator className="h-4 w-4 opacity-50" />
-                <Input id="months" type="number" min="1" step="1" value={responsibilityMonths} onChange={e => setResponsibilityMonths(Number(e.target.value))} />
+                <Input id="months" type="number" min={1} step={1} value={responsibilityMonths} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResponsibilityMonths(Number(e.target.value || 0))} />
               </div>
             </div>
 
@@ -199,7 +242,7 @@ export default function ClawbackCalculator() {
               <Label htmlFor="start">Contract start date</Label>
               <div className="flex items-center gap-2">
                 <Calendar className="h-4 w-4 opacity-50" />
-                <Input id="start" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                <Input id="start" type="date" value={startDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStartDate(e.target.value)} />
               </div>
             </div>
 
@@ -207,13 +250,13 @@ export default function ClawbackCalculator() {
               <Label htmlFor="termination">Termination date</Label>
               <div className="flex items-center gap-2">
                 <Calendar className="h-4 w-4 opacity-50" />
-                <Input id="termination" type="date" value={terminationDate} onChange={e => setTerminationDate(e.target.value)} />
+                <Input id="termination" type="date" value={terminationDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTerminationDate(e.target.value)} />
               </div>
             </div>
 
             <div className="space-y-2 md:col-span-2">
               <Label>Counting method</Label>
-              <Select value={mode} onValueChange={setMode}>
+              <Select value={mode} onValueChange={(value: CountingMethod) => setMode(value)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select rounding method" />
                 </SelectTrigger>
@@ -282,7 +325,7 @@ export default function ClawbackCalculator() {
                     <th className="py-2 pr-2">Commission</th>
                     <th className="py-2 pr-2">Clawback %</th>
                     <th className="py-2 pr-2">Repay</th>
-                    <th className="py-2 pr-2"></th>
+                    <th className="py-2 pr-2" />
                   </tr>
                 </thead>
                 <tbody>
@@ -314,7 +357,7 @@ export default function ClawbackCalculator() {
                     <tr className="border-t font-medium">
                       <td colSpan={9} className="py-2 pr-2 text-right">Total</td>
                       <td className="py-2 pr-2">{formatMoney(totalRepay)}</td>
-                      <td></td>
+                      <td />
                     </tr>
                   </tfoot>
                 )}
@@ -325,7 +368,7 @@ export default function ClawbackCalculator() {
 
         <section className="text-xs text-muted-foreground leading-relaxed">
           <p className="mb-2"><strong>Assumptions:</strong> Clawback equals the unearned portion within the responsibility window. After the window ends, clawback is 0%. Before it begins, clawback is 100%.</p>
-          <p><strong>Tip:</strong> Save each scenario to the table, then export CSV at the end. CSV opens in Excel, Numbers, LibreOffice and Google Sheets. If you truly need native .xlsx, we can wire a small helper later.</p>
+          <p><strong>Tip:</strong> Save each scenario to the table, then export CSV at the end. CSV opens in Excel, Numbers, LibreOffice and Google Sheets. If you need native .xlsx, wire a client-side generator like SheetJS later.</p>
         </section>
       </div>
     </div>
