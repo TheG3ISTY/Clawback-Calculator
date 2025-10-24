@@ -1,376 +1,301 @@
-import * as React from "react";
-import { useMemo, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { AlertCircle, Calendar, Calculator, DollarSign, PlusCircle, Trash2, FileDown } from "lucide-react";
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Commission Clawback Calculator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root { --bg:#0b0c10; --card:#151821; --text:#e8e8e8; --muted:#9aa3b2; --primary:#4f8cff; --danger:#ff5c5c; --border:#222737; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; background:var(--bg); color:var(--text); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    p.muted { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+    .card { background: var(--card); border:1px solid var(--border); border-radius: 12px; padding: 16px; margin: 16px 0; }
+    .grid { display:grid; gap:12px; }
+    @media (min-width: 860px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+    label { display:block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    input, select, button { width: 100%; padding: 10px 12px; border-radius: 8px; border:1px solid var(--border); background:#0e1118; color:var(--text); }
+    input[type="number"] { text-align: right; }
+    button { cursor: pointer; background: #121624; transition: background .15s ease, transform .02s ease; }
+    button:hover { background:#191e30; }
+    .btn-row { display:flex; gap:10px; flex-wrap: wrap; }
+    .btn { width:auto; }
+    .btn-primary { background: var(--primary); border-color: transparent; color: #fff; }
+    .btn-danger { background: var(--danger); border-color: transparent; color:#fff; }
+    .row { display:flex; align-items: baseline; justify-content: space-between; gap:12px; }
+    .kpi { font-size: 30px; font-weight: 700; }
+    .muted-sm { color: var(--muted); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .right { text-align: right; }
+    .warn { color: #ffb86b; }
+  </style>
+</head>
+<body>
+  <div id="root" class="wrap"></div>
 
-// Types
-interface CalcDetails {
-  totalDays?: number;
-  elapsedDays?: number;
-  monthsCounted?: number;
-  start?: Date;
-  end?: Date;
-}
+  <!-- React + Babel (no build tools) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-interface CalcResult {
-  valid: boolean;
-  message: string;
-  pct: number; // 0..1
-  repay: number; // in EUR
-  details: CalcDetails;
-}
+  <script type="text/babel">
+    const { useMemo, useState } = React;
 
-interface SavedRow {
-  name: string;
-  insurer: string;
-  contractNo: string;
-  start: string; // yyyy-mm-dd
-  termination: string; // yyyy-mm-dd
-  months: number;
-  method: CountingMethod;
-  commissionPaid: number;
-  clawbackPct: number; // 0..1
-  repay: number;
-}
+    // Utilities
+    const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+    const fmtPct = x => !Number.isFinite(x) ? "–" : (x * 100).toFixed(2) + "%";
+    const fmtMoney = x => !Number.isFinite(x) ? "–" : new Intl.NumberFormat(undefined, { style:"currency", currency:"EUR" }).format(x);
 
-type CountingMethod = "pro-rata-days" | "whole-months-round-up" | "whole-months-round-down";
-
-// Utils
-function addMonths(date: Date, months: number): Date {
-  const d = new Date(date.getTime());
-  const targetMonth = d.getMonth() + months;
-  const yearsToAdd = Math.floor(targetMonth / 12);
-  const newMonth = targetMonth % 12;
-  d.setFullYear(d.getFullYear() + yearsToAdd);
-  d.setMonth(newMonth);
-  return d;
-}
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-
-function formatPct(x: number): string {
-  if (!Number.isFinite(x)) return "–";
-  return (x * 100).toFixed(2) + "%";
-}
-
-function formatMoney(x: number): string {
-  if (!Number.isFinite(x)) return "–";
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR" }).format(x);
-}
-
-export default function ClawbackCalculator(): JSX.Element {
-  const [commissionPaid, setCommissionPaid] = useState<number>(0);
-  const [responsibilityMonths, setResponsibilityMonths] = useState<number>(12);
-  const [startDate, setStartDate] = useState<string>("");
-  const [terminationDate, setTerminationDate] = useState<string>("");
-  const [mode, setMode] = useState<CountingMethod>("pro-rata-days");
-
-  // Free-text metadata fields
-  const [clientName, setClientName] = useState<string>("");
-  const [insurer, setInsurer] = useState<string>("");
-  const [contractNumber, setContractNumber] = useState<string>("");
-
-  // Table of saved clawbacks this session
-  const [rows, setRows] = useState<SavedRow[]>([]);
-
-  const result: CalcResult = useMemo(() => {
-    if (!startDate || !terminationDate || !responsibilityMonths || responsibilityMonths <= 0) {
-      return { valid: false, message: "Fill all required fields.", pct: 0, repay: 0, details: {} };
-    }
-    const start = new Date(startDate + "T00:00:00");
-    const term = new Date(terminationDate + "T00:00:00");
-
-    if (isNaN(start.getTime()) || isNaN(term.getTime())) {
-      return { valid: false, message: "Invalid dates.", pct: 0, repay: 0, details: {} };
-    }
-    if (term < start) {
-      return { valid: false, message: "Termination cannot be before start.", pct: 0, repay: 0, details: {} };
+    function addMonths(date, months) {
+      const d = new Date(date.getTime());
+      const targetMonth = d.getMonth() + Number(months);
+      const yearsToAdd = Math.floor(targetMonth / 12);
+      const newMonth = targetMonth % 12;
+      d.setFullYear(d.getFullYear() + yearsToAdd);
+      d.setMonth(newMonth);
+      return d;
     }
 
-    const end = addMonths(start, Number(responsibilityMonths));
+    function ClawbackCalculator() {
+      // Inputs
+      const [clientName, setClientName] = useState("");
+      const [insurer, setInsurer] = useState("");
+      const [contractNumber, setContractNumber] = useState("");
 
-    let earnedRatio = 0; // portion of commission earned and kept
-    let detail: CalcDetails = {};
+      const [commissionPaid, setCommissionPaid] = useState(0);
+      const [responsibilityMonths, setResponsibilityMonths] = useState(12);
+      const [startDate, setStartDate] = useState("");
+      const [terminationDate, setTerminationDate] = useState("");
+      const [mode, setMode] = useState("pro-rata-days"); // "whole-months-round-up" | "whole-months-round-down"
 
-    if (mode === "pro-rata-days") {
-      const totalDays = clamp((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24), 1, Infinity);
-      const elapsedDays = clamp((term.getTime() - start.getTime()) / (1000 * 60 * 60 * 24), 0, totalDays);
-      earnedRatio = clamp(elapsedDays / totalDays, 0, 1);
-      detail = { totalDays: Math.round(totalDays), elapsedDays: Math.round(elapsedDays) };
-    } else if (mode === "whole-months-round-up") {
-      // Count months between start and termination, partial counts as full
-      let months = (term.getFullYear() - start.getFullYear()) * 12 + (term.getMonth() - start.getMonth());
-      const partial = term.getDate() >= start.getDate() ? 0 : 1; // if day earlier than start day, it's partial
-      months = months + (partial === 0 ? 1 : 0); // include current month as full if not earlier day
-      months = clamp(months, 0, Number(responsibilityMonths));
-      earnedRatio = months / Number(responsibilityMonths);
-      detail = { monthsCounted: months };
-    } else if (mode === "whole-months-round-down") {
-      // Count full months only, ignore partial
-      let months = (term.getFullYear() - start.getFullYear()) * 12 + (term.getMonth() - start.getMonth());
-      if (term.getDate() < start.getDate()) months -= 1; // not a full month yet
-      months = clamp(months, 0, Number(responsibilityMonths));
-      earnedRatio = months / Number(responsibilityMonths);
-      detail = { monthsCounted: months };
-    }
+      // Saved rows
+      const [rows, setRows] = useState([]);
 
-    const clawbackPct = clamp(1 - earnedRatio, 0, 1);
-    const repay = commissionPaid > 0 ? commissionPaid * clawbackPct : 0;
+      const result = useMemo(() => {
+        if (!startDate || !terminationDate || !responsibilityMonths || responsibilityMonths <= 0) {
+          return { valid:false, message:"Fill all required fields.", pct:0, repay:0 };
+        }
+        const start = new Date(startDate + "T00:00:00");
+        const term = new Date(terminationDate + "T00:00:00");
+        if (isNaN(start.getTime()) || isNaN(term.getTime())) return { valid:false, message:"Invalid dates.", pct:0, repay:0 };
+        if (term < start) return { valid:false, message:"Termination cannot be before start.", pct:0, repay:0 };
 
-    return { valid: true, message: "", pct: clawbackPct, repay, details: { ...detail, start, end } };
-  }, [commissionPaid, responsibilityMonths, startDate, terminationDate, mode]);
+        const end = addMonths(start, Number(responsibilityMonths));
 
-  const pct = result.pct ?? 0;
+        let earnedRatio = 0;
+        if (mode === "pro-rata-days") {
+          const totalDays = clamp((end - start) / 86400000, 1, Infinity);
+          const elapsedDays = clamp((term - start) / 86400000, 0, totalDays);
+          earnedRatio = clamp(elapsedDays / totalDays, 0, 1);
+        } else if (mode === "whole-months-round-up") {
+          let months = (term.getFullYear() - start.getFullYear()) * 12 + (term.getMonth() - start.getMonth());
+          const partial = term.getDate() >= start.getDate() ? 0 : 1;
+          months = months + (partial === 0 ? 1 : 0);
+          months = clamp(months, 0, Number(responsibilityMonths));
+          earnedRatio = months / Number(responsibilityMonths);
+        } else {
+          let months = (term.getFullYear() - start.getFullYear()) * 12 + (term.getMonth() - start.getMonth());
+          if (term.getDate() < start.getDate()) months -= 1;
+          months = clamp(months, 0, Number(responsibilityMonths));
+          earnedRatio = months / Number(responsibilityMonths);
+        }
 
-  function addRow() {
-    if (!result.valid) return;
-    const row: SavedRow = {
-      name: clientName || "",
-      insurer: insurer || "",
-      contractNo: contractNumber || "",
-      start: startDate,
-      termination: terminationDate,
-      months: Number(responsibilityMonths),
-      method: mode,
-      commissionPaid: Number(commissionPaid) || 0,
-      clawbackPct: pct,
-      repay: Number(result.repay) || 0,
-    };
-    setRows(prev => [row, ...prev]);
-  }
+        const pct = clamp(1 - earnedRatio, 0, 1);
+        const repay = commissionPaid > 0 ? commissionPaid * pct : 0;
+        return { valid:true, message:"", pct, repay };
+      }, [commissionPaid, responsibilityMonths, startDate, terminationDate, mode]);
 
-  function removeRow(index: number) {
-    setRows(prev => prev.filter((_, i) => i !== index));
-  }
+      const addRow = () => {
+        if (!result.valid) return;
+        const r = {
+          name: clientName.trim(),
+          insurer: insurer.trim(),
+          contractNo: contractNumber.trim(),
+          start: startDate,
+          termination: terminationDate,
+          months: Number(responsibilityMonths),
+          method: mode,
+          commissionPaid: Number(commissionPaid) || 0,
+          clawbackPct: result.pct,
+          repay: Number(result.repay) || 0
+        };
+        setRows(prev => [r, ...prev]);
+      };
 
-  function clearRows() {
-    setRows([]);
-  }
+      const removeRow = (idx) => setRows(prev => prev.filter((_, i) => i !== idx));
+      const clearRows = () => setRows([]);
 
-  function exportCSV() {
-    if (!rows.length) return;
-    const headers = [
-      "Name",
-      "Insurance Company",
-      "Contract Number",
-      "Start Date",
-      "Termination Date",
-      "Responsibility Months",
-      "Counting Method",
-      "Commission Paid (€)",
-      "Clawback %",
-      "Repayment (€)"
-    ];
+      const exportCSV = () => {
+        if (!rows.length) return;
+        const headers = [
+          "Name","Insurance Company","Contract Number","Start Date","Termination Date",
+          "Responsibility Months","Counting Method","Commission Paid (€)","Clawback %","Repayment (€)"
+        ];
+        const mapMethod = m =>
+          m === "pro-rata-days" ? "Pro-rata days" :
+          m === "whole-months-round-up" ? "Whole months (up)" : "Whole months (down)";
 
-    const mapMethod = (m: CountingMethod) => (
-      m === "pro-rata-days" ? "Pro‑rata days" : m === "whole-months-round-up" ? "Whole months (up)" : "Whole months (down)"
-    );
+        const csvRows = rows.map(r => [
+          r.name, r.insurer, r.contractNo, r.start, r.termination, String(r.months), mapMethod(r.method),
+          r.commissionPaid.toFixed(2), (r.clawbackPct*100).toFixed(2) + "%", r.repay.toFixed(2)
+        ].map(v => `"${String(v).replaceAll('"','""')}"`).join(","));
 
-    const rowsCsv = rows.map(r => [
-      r.name,
-      r.insurer,
-      r.contractNo,
-      r.start,
-      r.termination,
-      String(r.months),
-      mapMethod(r.method),
-      r.commissionPaid.toFixed(2),
-      (r.clawbackPct * 100).toFixed(2) + "%",
-      r.repay.toFixed(2)
-    ].map(v => `"${String(v).replaceAll('"','""')}"`).join(","));
+        const csv = [headers.join(","), ...csvRows].join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `clawbacks_${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      };
 
-    const csv = [headers.join(","), ...rowsCsv].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `clawbacks_${new Date().toISOString().slice(0,10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
+      const totalRepay = rows.reduce((s, r) => s + (Number(r.repay)||0), 0);
 
-  const totalRepay = rows.reduce((sum, r) => sum + (Number(r.repay) || 0), 0);
+      return (
+        <>
+          <h1>Commission Clawback Calculator</h1>
+          <p className="muted">Enter the initially paid commission, contract period and termination date to calculate the repayment amount. Save each calculation to build an exportable table.</p>
 
-  return (
-    <div className="min-h-screen w-full bg-background text-foreground px-4 py-8 lg:py-12">
-      <div className="max-w-5xl mx-auto space-y-6">
-        <header className="space-y-2">
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Commission Clawback Calculator</h1>
-          <p className="text-sm text-muted-foreground">Enter the initially paid commission, contract period and termination date to calculate the repayment amount. Save each calculation to build an exportable table.</p>
-        </header>
-
-        <Card className="shadow-sm border">
-          <CardContent className="p-4 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="clientName">Name</Label>
-              <Input id="clientName" placeholder="e.g. Jane Doe" value={clientName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setClientName(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="insurer">Insurance Company</Label>
-              <Input id="insurer" placeholder="e.g. Allianz" value={insurer} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInsurer(e.target.value)} />
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="contractNumber">Contract number</Label>
-              <Input id="contractNumber" placeholder="e.g. ABC-123456" value={contractNumber} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractNumber(e.target.value)} />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="commissionPaid">Commission initially paid (€)</Label>
-              <div className="flex items-center gap-2">
-                <DollarSign className="h-4 w-4 opacity-50" />
-                <Input id="commissionPaid" type="number" min={0} step={0.01} placeholder="e.g. 3500" value={commissionPaid} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCommissionPaid(Number(e.target.value || 0))} />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="months">Responsibility period (months)</Label>
-              <div className="flex items-center gap-2">
-                <Calculator className="h-4 w-4 opacity-50" />
-                <Input id="months" type="number" min={1} step={1} value={responsibilityMonths} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResponsibilityMonths(Number(e.target.value || 0))} />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="start">Contract start date</Label>
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 opacity-50" />
-                <Input id="start" type="date" value={startDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStartDate(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="termination">Termination date</Label>
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 opacity-50" />
-                <Input id="termination" type="date" value={terminationDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTerminationDate(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="space-y-2 md:col-span-2">
-              <Label>Counting method</Label>
-              <Select value={mode} onValueChange={(value: CountingMethod) => setMode(value)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select rounding method" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="pro-rata-days">Pro‑rata by days</SelectItem>
-                  <SelectItem value="whole-months-round-up">Whole months (round up)</SelectItem>
-                  <SelectItem value="whole-months-round-down">Whole months (round down)</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">"Pro‑rata by days" is usually fairest. Switch if your agreement uses a different rule.</p>
-            </div>
-
-            {!result.valid && (
-              <div className="md:col-span-2 text-sm text-red-600 flex items-center gap-2"><AlertCircle className="h-4 w-4"/> {result.message}</div>
-            )}
-
-            <div className="md:col-span-2 flex flex-wrap gap-2 pt-2">
-              <Button variant="outline" onClick={() => { setCommissionPaid(0); setResponsibilityMonths(12); setStartDate(""); setTerminationDate(""); setMode("pro-rata-days"); }}>Reset fields</Button>
-              <Button onClick={addRow} disabled={!result.valid}><PlusCircle className="h-4 w-4 mr-1"/>Add to table</Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Live result summary */}
-        <Card className="shadow-sm border">
-          <CardContent className="p-4 sm:p-6 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="card">
+            <div className="grid grid-2">
               <div>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Clawback percentage</p>
-                <h2 className="text-3xl font-semibold">{formatPct(pct)}</h2>
+                <label htmlFor="clientName">Name</label>
+                <input id="clientName" placeholder="e.g. Jane Doe" value={clientName} onChange={e => setClientName(e.target.value)} />
               </div>
-              <div className="text-right">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Repayment amount</p>
-                <h2 className="text-2xl font-semibold">{commissionPaid ? formatMoney(result.repay) : "—"}</h2>
+              <div>
+                <label htmlFor="insurer">Insurance Company</label>
+                <input id="insurer" placeholder="e.g. Allianz" value={insurer} onChange={e => setInsurer(e.target.value)} />
+              </div>
+              <div>
+                <label htmlFor="contractNumber">Contract number</label>
+                <input id="contractNumber" placeholder="e.g. ABC-123456" value={contractNumber} onChange={e => setContractNumber(e.target.value)} />
+              </div>
+
+              <div>
+                <label htmlFor="commissionPaid">Commission initially paid (€)</label>
+                <input id="commissionPaid" type="number" min="0" step="0.01" placeholder="e.g. 3500"
+                       value={commissionPaid} onChange={e => setCommissionPaid(Number(e.target.value || 0))} />
+              </div>
+
+              <div>
+                <label htmlFor="months">Responsibility period (months)</label>
+                <input id="months" type="number" min="1" step="1"
+                       value={responsibilityMonths} onChange={e => setResponsibilityMonths(Number(e.target.value || 0))} />
+              </div>
+
+              <div>
+                <label htmlFor="start">Contract start date</label>
+                <input id="start" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+              </div>
+
+              <div>
+                <label htmlFor="termination">Termination date</label>
+                <input id="termination" type="date" value={terminationDate} onChange={e => setTerminationDate(e.target.value)} />
+              </div>
+
+              <div>
+                <label htmlFor="method">Counting method</label>
+                <select id="method" value={mode} onChange={e => setMode(e.target.value)}>
+                  <option value="pro-rata-days">Pro-rata by days</option>
+                  <option value="whole-months-round-up">Whole months (round up)</option>
+                  <option value="whole-months-round-down">Whole months (round down)</option>
+                </select>
+                <div className="muted-sm">“Pro-rata by days” is usually fairest.</div>
+              </div>
+
+              {!result.valid && (
+                <div className="warn">⚠ {result.message}</div>
+              )}
+
+              <div className="btn-row">
+                <button className="btn" onClick={() => { setCommissionPaid(0); setResponsibilityMonths(12); setStartDate(""); setTerminationDate(""); setMode("pro-rata-days"); }}>Reset fields</button>
+                <button className="btn btn-primary" onClick={addRow} disabled={!result.valid}>Add to table</button>
               </div>
             </div>
+          </div>
 
-            <div className="w-full bg-muted h-3 rounded-full overflow-hidden" aria-label="progress">
-              <div className="h-3 bg-primary" style={{ width: `${pct * 100}%` }} />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Saved table */}
-        <Card className="shadow-sm border">
-          <CardContent className="p-4 sm:p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Saved clawbacks ({rows.length})</h2>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={exportCSV} disabled={!rows.length}><FileDown className="h-4 w-4 mr-1"/>Export CSV</Button>
-                <Button variant="destructive" onClick={clearRows} disabled={!rows.length}><Trash2 className="h-4 w-4 mr-1"/>Clear</Button>
+          <div className="card">
+            <div className="row">
+              <div>
+                <div className="muted-sm">Clawback percentage</div>
+                <div className="kpi">{fmtPct(result.pct)}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div className="muted-sm">Repayment amount</div>
+                <div className="kpi">{commissionPaid ? fmtMoney(result.repay) : "—"}</div>
               </div>
             </div>
+          </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-left text-muted-foreground">
+          <div className="card">
+            <div className="row">
+              <h2 style={{margin:0}}>Saved clawbacks ({rows.length})</h2>
+              <div className="btn-row">
+                <button className="btn" onClick={exportCSV} disabled={!rows.length}>Export CSV</button>
+                <button className="btn btn-danger" onClick={clearRows} disabled={!rows.length}>Clear</button>
+              </div>
+            </div>
+            <div style={{overflowX:"auto"}}>
+              <table>
+                <thead>
                   <tr>
-                    <th className="py-2 pr-2">Name</th>
-                    <th className="py-2 pr-2">Insurance Company</th>
-                    <th className="py-2 pr-2">Contract #</th>
-                    <th className="py-2 pr-2">Start</th>
-                    <th className="py-2 pr-2">Termination</th>
-                    <th className="py-2 pr-2">Months</th>
-                    <th className="py-2 pr-2">Method</th>
-                    <th className="py-2 pr-2">Commission</th>
-                    <th className="py-2 pr-2">Clawback %</th>
-                    <th className="py-2 pr-2">Repay</th>
-                    <th className="py-2 pr-2" />
+                    <th>Name</th>
+                    <th>Insurance Company</th>
+                    <th>Contract #</th>
+                    <th>Start</th>
+                    <th>Termination</th>
+                    <th>Months</th>
+                    <th>Method</th>
+                    <th className="right">Commission</th>
+                    <th className="right">Clawback %</th>
+                    <th className="right">Repay</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.length === 0 && (
-                    <tr>
-                      <td colSpan={11} className="py-4 text-center text-muted-foreground">No entries yet. Calculate and click "Add to table".</td>
-                    </tr>
+                    <tr><td colSpan="11" className="muted-sm" style={{textAlign:"center", padding:"12px"}}>No entries yet. Calculate and click “Add to table”.</td></tr>
                   )}
                   {rows.map((r, i) => (
-                    <tr key={i} className="border-t">
-                      <td className="py-2 pr-2">{r.name}</td>
-                      <td className="py-2 pr-2">{r.insurer}</td>
-                      <td className="py-2 pr-2">{r.contractNo}</td>
-                      <td className="py-2 pr-2">{r.start}</td>
-                      <td className="py-2 pr-2">{r.termination}</td>
-                      <td className="py-2 pr-2">{r.months}</td>
-                      <td className="py-2 pr-2">{r.method === "pro-rata-days" ? "Pro‑rata days" : r.method === "whole-months-round-up" ? "Whole months (up)" : "Whole months (down)"}</td>
-                      <td className="py-2 pr-2">{formatMoney(r.commissionPaid)}</td>
-                      <td className="py-2 pr-2">{formatPct(r.clawbackPct)}</td>
-                      <td className="py-2 pr-2">{formatMoney(r.repay)}</td>
-                      <td className="py-2 pr-2 text-right">
-                        <Button size="sm" variant="ghost" onClick={() => removeRow(i)}><Trash2 className="h-4 w-4"/></Button>
-                      </td>
+                    <tr key={i}>
+                      <td>{r.name}</td>
+                      <td>{r.insurer}</td>
+                      <td>{r.contractNo}</td>
+                      <td>{r.start}</td>
+                      <td>{r.termination}</td>
+                      <td>{r.months}</td>
+                      <td>{r.method === "pro-rata-days" ? "Pro-rata days" : r.method === "whole-months-round-up" ? "Whole months (up)" : "Whole months (down)"}</td>
+                      <td className="right">{fmtMoney(r.commissionPaid)}</td>
+                      <td className="right">{fmtPct(r.clawbackPct)}</td>
+                      <td className="right">{fmtMoney(r.repay)}</td>
+                      <td className="right"><button className="btn" onClick={() => removeRow(i)}>Delete</button></td>
                     </tr>
                   ))}
                 </tbody>
                 {rows.length > 0 && (
                   <tfoot>
-                    <tr className="border-t font-medium">
-                      <td colSpan={9} className="py-2 pr-2 text-right">Total</td>
-                      <td className="py-2 pr-2">{formatMoney(totalRepay)}</td>
-                      <td />
+                    <tr>
+                      <td colSpan="9" className="right">Total</td>
+                      <td className="right">{fmtMoney(totalRepay)}</td>
+                      <td></td>
                     </tr>
                   </tfoot>
                 )}
               </table>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </>
+      );
+    }
 
-        <section className="text-xs text-muted-foreground leading-relaxed">
-          <p className="mb-2"><strong>Assumptions:</strong> Clawback equals the unearned portion within the responsibility window. After the window ends, clawback is 0%. Before it begins, clawback is 100%.</p>
-          <p><strong>Tip:</strong> Save each scenario to the table, then export CSV at the end. CSV opens in Excel, Numbers, LibreOffice and Google Sheets. If you need native .xlsx, wire a client-side generator like SheetJS later.</p>
-        </section>
-      </div>
-    </div>
-  );
-}
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<ClawbackCalculator />);
+  </script>
+</body>
+</html>
